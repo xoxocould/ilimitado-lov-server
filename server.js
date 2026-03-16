@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,115 +7,53 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// ==============================
-// Rota de saúde (health check)
-// ==============================
+// Health check
 app.get('/', (req, res) => {
-    res.json({ status: 'ok', message: 'Ilimitado Lov Server rodando!' });
+  res.json({ status: 'ok', service: 'ilimitado-lov-server', timestamp: new Date().toISOString() });
 });
 
-// ==============================
-// Webhook principal
-// Recebe: { message, projectId, token }
-// Envia para o Lovable e retorna resposta
-// ==============================
-app.post('/webhook/promptxexe', async (req, res) => {
-    const { message, projectId, token } = req.body;
+// Main webhook endpoint - recebe mensagens da extensão e envia para a API do Lovable
+app.post('/webhook', async (req, res) => {
+  const { message, projectId, token } = req.body;
 
-    console.log(`[${new Date().toISOString()}] Recebido:`);
-    console.log('  projectId:', projectId);
-    console.log('  message:', message?.slice(0, 80));
-    console.log('  token[:20]:', token?.substring(0, 20));
+  // Ping de diagnóstico
+  if (message === '__ping__') {
+    return res.json({ status: 'ok', reply: 'pong' });
+  }
 
-    // Validação básica
-    if (!message || !projectId || !token) {
-        return res.status(400).json({
-            error: 'Campos obrigatórios: message, projectId, token'
-        });
+  if (!message || !projectId || !token) {
+    return res.status(400).json({ error: 'Campos obrigatórios: message, projectId, token' });
+  }
+
+  try {
+    // Envia a mensagem para a API do Lovable
+    const lovableRes = await fetch(`https://api.lovable.dev/projects/${projectId}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ message })
+    });
+
+    if (!lovableRes.ok) {
+      const errText = await lovableRes.text().catch(() => '');
+      console.error(`Lovable API error ${lovableRes.status}:`, errText.slice(0, 300));
+      return res.status(lovableRes.status).json({
+        error: `Lovable API retornou ${lovableRes.status}`,
+        details: errText.slice(0, 200)
+      });
     }
 
-    // Ping de teste (enviado pelo diagnóstico da extensão)
-    if (message === '__ping__') {
-        return res.json({ status: 'ok', reply: 'pong' });
-    }
+    const data = await lovableRes.json();
+    return res.json({ reply: data.reply || data.message || 'Mensagem enviada com sucesso!' });
 
-    try {
-        // -----------------------------------------------
-        // Tenta enviar mensagem para o Lovable via API
-        // -----------------------------------------------
-
-        // Endpoint 1: API pública (se existir)
-        let lovableRes = await fetch(
-            `https://api.lovable.dev/api/v1/projects/${projectId}/messages`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({ content: message })
-            }
-        );
-
-        // Se a API pública não funcionar, tenta endpoint interno
-        if (!lovableRes.ok) {
-            console.log(`API pública retornou ${lovableRes.status}, tentando endpoint interno...`);
-
-            lovableRes = await fetch(
-                `https://lovable.dev/api/chat`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`,
-                        'Cookie': `sb-access-token=${token}`,
-                        'Origin': 'https://lovable.dev',
-                        'Referer': `https://lovable.dev/projects/${projectId}`
-                    },
-                    body: JSON.stringify({
-                        message: message,
-                        project_id: projectId
-                    })
-                }
-            );
-        }
-
-        // Lê o corpo da resposta
-        const responseText = await lovableRes.text();
-        console.log(`  Lovable status: ${lovableRes.status}`);
-        console.log(`  Lovable response: ${responseText.slice(0, 200)}`);
-
-        if (lovableRes.ok) {
-            try {
-                const data = JSON.parse(responseText);
-                return res.json({
-                    status: 'ok',
-                    reply: data.reply || data.message || data.content || '✅ Mensagem enviada ao Lovable!',
-                    raw: data
-                });
-            } catch (e) {
-                return res.json({
-                    status: 'ok',
-                    reply: '✅ Mensagem enviada ao Lovable!'
-                });
-            }
-        } else {
-            // Retorna o erro do Lovable com detalhes
-            return res.status(lovableRes.status).json({
-                error: `Lovable retornou ${lovableRes.status}`,
-                details: responseText.slice(0, 500)
-            });
-        }
-
-    } catch (err) {
-        console.error('Erro no servidor:', err.message);
-        return res.status(500).json({
-            error: 'Erro interno do servidor',
-            message: err.message
-        });
-    }
+  } catch (err) {
+    console.error('Erro ao chamar Lovable API:', err.message);
+    return res.status(500).json({ error: 'Erro interno do servidor', details: err.message });
+  }
 });
 
 app.listen(PORT, () => {
-    console.log(`✅ Servidor rodando na porta ${PORT}`);
+  console.log(`✅ ilimitado-lov-server rodando na porta ${PORT}`);
 });
